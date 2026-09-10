@@ -1,0 +1,104 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  background: #0f1420;
+  color: #dde3f0;
+  font-size: 14px;
+}
+
+.page { max-width: 1280px; margin: 0 auto; padding: 20px; }
+.loading { color: #8fa0c0; text-align: center; margin-top: 40vh; }
+
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-bottom: 16px; border-bottom: 1px solid #232c42; margin-bottom: 20px;
+}
+h1 { font-size: 20px; margin: 0; }
+h3 { margin: 0 0 12px; font-size: 15px; color: #aebadd; }
+.header-right { display: flex; gap: 10px; align-items: center; }
+
+.cache-badge {
+  font-size: 12px; padding: 3px 10px; border-radius: 10px;
+  background: #1c2438; color: #7f8db3; border: 1px solid #2b3550;
+}
+.cache-badge.hit { color: #4ade80; border-color: #166534; }
+.cache-badge.miss { color: #fbbf24; border-color: #92600a; }
+
+.pools { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; }
+.grid .card.wide { grid-row: span 2; }
+
+.card {
+  background: #161d2e; border: 1px solid #232c42; border-radius: 10px;
+  padding: 16px; min-width: 0;
+}
+
+.pool-head { display: flex; justify-content: space-between; align-items: baseline; }
+.pool-head h3 { margin: 0; font-size: 17px; color: #e8edfa; }
+.seats { font-size: 24px; font-weight: 700; color: #7dd3fc; }
+.seats small { font-size: 13px; color: #7f8db3; font-weight: 400; }
+.pool-modes { margin: 8px 0 12px; display: flex; gap: 8px; }
+
+.tag { font-size: 12px; padding: 2px 8px; border-radius: 8px; }
+.tag.online { background: #14324a; color: #7dd3fc; }
+.tag.offline { background: #3a2a12; color: #fbbf24; }
+
+.dept-table, .borrow-table { width: 100%; border-collapse: collapse; }
+.dept-table th, .dept-table td, .borrow-table th, .borrow-table td {
+  text-align: left; padding: 6px 8px; border-bottom: 1px solid #1f2840; font-size: 13px;
+}
+.dept-table th, .borrow-table th { color: #7f8db3; font-weight: 500; }
+
+.quota-bar {
+  position: relative; height: 18px; background: #0f1420;
+  border-radius: 4px; overflow: hidden; min-width: 120px;
+}
+.quota-fill { height: 100%; background: #2563eb; transition: width .3s; }
+.quota-fill.over { background: #dc2626; }
+.quota-text {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; font-size: 11px; color: #e5ebfa; white-space: nowrap;
+}
+
+.form { display: flex; flex-direction: column; gap: 10px; }
+.form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #8fa0c0; }
+.form input, .form select, textarea {
+  background: #0f1420; border: 1px solid #2b3550; border-radius: 6px;
+  color: #dde3f0; padding: 7px 10px; font-size: 13px; font-family: inherit;
+}
+.form input:focus, .form select:focus { outline: none; border-color: #3b82f6; }
+
+button {
+  background: #2563eb; color: #fff; border: none; border-radius: 6px;
+  padding: 8px 14px; font-size: 13px; cursor: pointer; font-family: inherit;
+}
+button:hover { background: #1d4ed8; }
+button:disabled { opacity: .5; cursor: default; }
+button.secondary { background: #334155; }
+button.secondary:hover { background: #3f4f66; }
+button.mini { padding: 4px 10px; font-size: 12px; }
+
+.idem-row { display: flex; align-items: center; gap: 8px; }
+.idem-row code { color: #7f8db3; font-size: 12px; }
+
+.result {
+  margin-top: 12px; padding: 10px; border-radius: 6px; font-size: 13px;
+  background: #0f1420; border: 1px solid #2b3550; word-break: break-all;
+}
+.result.ok { border-color: #166534; }
+.result.err { border-color: #7f1d1d; }
+.cred-box { margin-top: 8px; }
+.cred-box code { font-size: 11px; color: #fbbf24; word-break: break-all; }
+
+.warn { color: #f87171; font-weight: 600; }
+.muted { color: #5b6880; }
+
+.manual-cred { margin-top: 10px; font-size: 12px; color: #7f8db3; }
+.manual-cred textarea { width: 100%; margin-top: 6px; }
+
+.log { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; font-size: 12px; }
+.log li { padding: 5px 0; border-bottom: 1px solid #1f2840; color: #8fa0c0; }
+.log li.ok { color: #4ade80; }
+.log li.err { color: #f87171; }
