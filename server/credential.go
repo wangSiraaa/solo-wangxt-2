@@ -25,6 +25,7 @@ type Claims struct {
 	PoolID    int64  `json:"pid"`
 	Nonce     string `json:"nonce"`
 	ExpUnixMs int64  `json:"exp"`
+	Epoch     int64  `json:"ep"` // 签发代次:标识来源实例权威,归还时不作有效期判定
 }
 
 func SignCredential(secret []byte, c Claims) string {

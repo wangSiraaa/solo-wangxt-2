@@ -20,6 +20,10 @@ type config struct {
 	credSecret   string
 	reapInterval time.Duration
 	webDist      string
+	instanceID   string
+	leaseDur     time.Duration
+	renewEvery   time.Duration
+	autoAcquire  bool
 }
 
 func envOr(key, def string) string {
@@ -30,6 +34,10 @@ func envOr(key, def string) string {
 }
 
 func loadConfig() config {
+	leaseMs, err := time.ParseDuration(envOr("LEASE_MS", "6000") + "ms")
+	if err != nil {
+		leaseMs = 6 * time.Second
+	}
 	return config{
 		httpAddr:     envOr("HTTP_ADDR", ":8080"),
 		dbDSN:        envOr("DB_DSN", "app:app123@tcp(127.0.0.1:3306)/licensehub?parseTime=true"),
@@ -37,6 +45,10 @@ func loadConfig() config {
 		credSecret:   envOr("CREDENTIAL_SECRET", "dev-only-secret-change-me"),
 		reapInterval: 5 * time.Second,
 		webDist:      envOr("WEB_DIST", "web/dist"),
+		instanceID:   envOr("INSTANCE_ID", "instance-a"),
+		leaseDur:     leaseMs,
+		renewEvery:   2 * time.Second,
+		autoAcquire:  envOr("AUTO_ACQUIRE", "1") != "0",
 	}
 }
 
@@ -66,10 +78,43 @@ func main() {
 	cache := NewCache(cfg.redisAddr, 0)
 	defer cache.Close()
 
-	srv := &Server{store: store, cache: cache, cred: []byte(cfg.credSecret), now: time.Now}
+	srv := &Server{
+		store: store, cache: cache, cred: []byte(cfg.credSecret), now: time.Now,
+		instanceID: cfg.instanceID, view: &AuthorityView{}, leaseDur: cfg.leaseDur,
+	}
 	r := NewRouter(srv)
 
-	// 后台过期回收:离线席位到期后自动归还池子
+	// 租约循环:持有者续租;非持有者在租约过期后接管。
+	// 权威判据永远在数据库,这里只是触发;签发路径另有事务内围栏检查兜底。
+	go func() {
+		ticker := time.NewTicker(cfg.renewEvery)
+		defer ticker.Stop()
+		for range ticker.C {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			now := time.Now()
+			held, epoch := srv.view.Get()
+			if held {
+				ok, err := store.RenewLease(ctx, cfg.instanceID, epoch, cfg.leaseDur, now)
+				if err != nil {
+					log.Printf("lease renew: %v", err)
+				} else if !ok {
+					log.Printf("实例 %s 失去权威(epoch %d 已被接管),转为备用", cfg.instanceID, epoch)
+					srv.view.Set(false, 0)
+				}
+			} else if cfg.autoAcquire {
+				lease, acquired, err := store.AcquireLease(ctx, cfg.instanceID, "租约过期,自动接管", cfg.leaseDur, now)
+				if err != nil {
+					log.Printf("lease acquire: %v", err)
+				} else if acquired {
+					log.Printf("实例 %s 接管权威,epoch=%d", cfg.instanceID, lease.Epoch)
+					srv.view.Set(true, lease.Epoch)
+				}
+			}
+			cancel()
+		}
+	}()
+
+	// 后台过期回收:离线席位到期后自动归还池子(按原有效期,与代次无关)
 	go func() {
 		ticker := time.NewTicker(cfg.reapInterval)
 		defer ticker.Stop()
@@ -103,7 +148,7 @@ func main() {
 		log.Printf("提示: 未找到 %s,仅提供 API", cfg.webDist)
 	}
 
-	log.Printf("LicenseHub 服务启动: http://localhost%s", cfg.httpAddr)
+	log.Printf("LicenseHub 实例 %s 启动: http://localhost%s (租约 %v)", cfg.instanceID, cfg.httpAddr, cfg.leaseDur)
 	if err := r.Run(cfg.httpAddr); err != nil {
 		log.Fatal(err)
 	}

@@ -36,5 +36,6 @@ DROP USER IF EXISTS ''@'localhost';
 FLUSH PRIVILEGES;
 SQL
 $R/usr/bin/mysql -h 127.0.0.1 -u app -papp123 licensehub < /workspace/server/schema.sql
+$R/usr/bin/mysql -h 127.0.0.1 -u app -papp123 licensehub < /workspace/server/migrate_v2.sql
 $R/usr/bin/mysql -h 127.0.0.1 -u app -papp123 licensehub < /workspace/server/seed.sql
 echo "基础设施就绪: MySQL 127.0.0.1:3306 / Redis 127.0.0.1:6379"

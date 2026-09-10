@@ -28,7 +28,10 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	if _, err := admin.Exec(`CREATE DATABASE IF NOT EXISTS licensehub_test CHARACTER SET utf8mb4`); err != nil {
+	if _, err := admin.Exec(`DROP DATABASE IF EXISTS licensehub_test`); err != nil {
+		panic(fmt.Sprintf("drop test db: %v", err))
+	}
+	if _, err := admin.Exec(`CREATE DATABASE licensehub_test CHARACTER SET utf8mb4`); err != nil {
 		panic(fmt.Sprintf("create test db: %v", err))
 	}
 	admin.Close()
@@ -52,7 +55,10 @@ func TestMain(m *testing.M) {
 
 	gin.SetMode(gin.TestMode)
 	cache := NewCache(envOr("TEST_REDIS_ADDR", "127.0.0.1:6379"), 1) // 独立 db 号,避免污染演示数据
-	testServer = &Server{store: NewStore(testDB), cache: cache, cred: []byte("test-secret"), now: time.Now}
+	testServer = &Server{
+		store: NewStore(testDB), cache: cache, cred: []byte("test-secret"), now: time.Now,
+		instanceID: "test-instance", view: &AuthorityView{}, leaseDur: time.Minute,
+	}
 	testRouter = NewRouter(testServer)
 
 	os.Exit(m.Run())
@@ -60,11 +66,18 @@ func TestMain(m *testing.M) {
 
 func resetState(t *testing.T) {
 	t.Helper()
-	for _, table := range []string{"borrows", "department_quotas", "license_pools", "departments"} {
+	for _, table := range []string{"borrows", "department_quotas", "license_pools", "departments", "takeover_history"} {
 		if _, err := testDB.Exec("DELETE FROM " + table); err != nil {
 			t.Fatalf("reset %s: %v", table, err)
 		}
 	}
+	// 默认让测试实例持有权威租约;HA 测试再按需改写租约行
+	if _, err := testDB.Exec(
+		`UPDATE service_lease SET epoch = 1, holder_id = 'test-instance',
+		 lease_expires_at = DATE_ADD(NOW(3), INTERVAL 1 HOUR), takeover_reason = 'test reset' WHERE id = 1`); err != nil {
+		t.Fatalf("reset lease: %v", err)
+	}
+	testServer.view.Set(true, 1)
 	if testServer.cache.Enabled() {
 		testServer.cache.rdb.FlushDB(context.Background())
 	}
@@ -102,6 +115,11 @@ type apiResp struct {
 
 func doJSON(t *testing.T, method, path string, payload any) apiResp {
 	t.Helper()
+	return doJSONOn(t, testRouter, method, path, payload)
+}
+
+func doJSONOn(t *testing.T, router *gin.Engine, method, path string, payload any) apiResp {
+	t.Helper()
 	var buf bytes.Buffer
 	if payload != nil {
 		if err := json.NewEncoder(&buf).Encode(payload); err != nil {
@@ -111,7 +129,7 @@ func doJSON(t *testing.T, method, path string, payload any) apiResp {
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	testRouter.ServeHTTP(w, req)
+	router.ServeHTTP(w, req)
 	res := apiResp{code: w.Code, header: w.Header()}
 	if w.Body.Len() > 0 {
 		if err := json.Unmarshal(w.Body.Bytes(), &res.body); err != nil {
@@ -121,8 +139,31 @@ func doJSON(t *testing.T, method, path string, payload any) apiResp {
 	return res
 }
 
+// newInstanceRouter 模拟另一个服务实例:共享同一 MySQL/Redis,不同实例身份
+func newInstanceRouter(id string) *gin.Engine {
+	s := &Server{
+		store: testServer.store, cache: testServer.cache, cred: testServer.cred, now: time.Now,
+		instanceID: id, view: &AuthorityView{}, leaseDur: time.Minute,
+	}
+	return NewRouter(s)
+}
+
+// forceLease 直接改写租约行,模拟崩溃/接管等场景
+func forceLease(t *testing.T, holder string, expiresIn time.Duration, epoch int64) {
+	t.Helper()
+	if _, err := testDB.Exec(
+		`UPDATE service_lease SET epoch = ?, holder_id = ?, lease_expires_at = ?, takeover_reason = 'test' WHERE id = 1`,
+		epoch, holder, time.Now().Add(expiresIn)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func borrowOnce(t *testing.T, poolID, deptID int64, employee, mode, key string, ttl int) apiResp {
-	return doJSON(t, http.MethodPost, "/api/borrows", map[string]any{
+	return borrowOn(t, testRouter, poolID, deptID, employee, mode, key, ttl)
+}
+
+func borrowOn(t *testing.T, router *gin.Engine, poolID, deptID int64, employee, mode, key string, ttl int) apiResp {
+	return doJSONOn(t, router, http.MethodPost, "/api/borrows", map[string]any{
 		"pool_id": poolID, "department_id": deptID, "employee": employee,
 		"mode": mode, "ttl_seconds": ttl, "idempotency_key": key,
 	})

@@ -15,4 +15,6 @@ if [ ! -d web/dist ]; then
 fi
 
 echo "访问 http://localhost:8080"
+pkill -f 'server/licensehub' 2>/dev/null || true
+sleep 1
 exec ./server/licensehub

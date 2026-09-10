@@ -15,12 +15,23 @@ const dropCred = (borrowId) => {
   localStorage.setItem(CRED_STORE_KEY, JSON.stringify(all))
 }
 
+// 对端实例地址(双实例演示:8080 <-> 8081)
+const peerBase = () => {
+  const { hostname, port } = window.location
+  return `http://${hostname}:${port === '8081' ? '8080' : '8081'}`
+}
+
 function fmtLeft(seconds) {
   if (seconds == null) return '—'
   if (seconds < 0) return '已过期,待回收'
   const m = Math.floor(seconds / 60)
   const s = seconds % 60
   return m > 0 ? `${m}分${s}秒` : `${s}秒`
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleTimeString()
 }
 
 function QuotaBar({ used, quota }) {
@@ -69,6 +80,62 @@ function PoolCard({ pool }) {
   )
 }
 
+// 实例权威状态:本实例 + 对端实例 + 数据库租约(唯一事实)+ 接管历史
+function AuthorityPanel({ auth, peerAuth, onTakeover }) {
+  if (!auth) return null
+  const lease = auth.lease
+  const leaseLeft = Math.max(0, Math.round((new Date(lease.lease_expires_at) - Date.now()) / 1000))
+  const instances = [
+    { label: '本实例', data: auth },
+    peerAuth ? { label: '对端实例', data: peerAuth } : null,
+  ].filter(Boolean)
+
+  return (
+    <div className="card authority-card">
+      <h3>实例权威状态</h3>
+      <table className="dept-table">
+        <thead>
+          <tr><th></th><th>实例</th><th>权威?</th><th>本地认知</th></tr>
+        </thead>
+        <tbody>
+          {instances.map(({ label, data }) => (
+            <tr key={label}>
+              <td className="muted">{label}</td>
+              <td>{data.instance_id}</td>
+              <td>
+                <span className={`tag ${data.is_authoritative ? 'online' : 'offline'}`}>
+                  {data.is_authoritative ? '权威(可签发)' : '备用(围栏拦截)'}
+                </span>
+              </td>
+              <td className="muted">
+                held={String(data.local_view.held)} epoch={data.local_view.epoch}
+              </td>
+            </tr>
+          ))}
+          {!peerAuth && (
+            <tr><td className="muted">对端实例</td><td colSpan="3" className="muted">不可达(单实例或对端已停止)</td></tr>
+          )}
+        </tbody>
+      </table>
+      <div className="lease-line">
+        数据库租约(唯一事实):持有者 <b>{lease.holder_id || '—'}</b> · 代次 <b>{lease.epoch}</b> ·{' '}
+        {lease.valid ? `剩余 ${leaseLeft}s` : '已过期'} · 接管原因:{lease.takeover_reason || '—'}
+        <button className="mini" style={{ marginLeft: 10 }} onClick={onTakeover}>手动接管</button>
+      </div>
+      {auth.history?.length > 0 && (
+        <details className="history">
+          <summary>接管历史({auth.history.length})</summary>
+          <ul>
+            {auth.history.map((h, i) => (
+              <li key={i}>[{fmtTime(h.at)}] epoch {h.epoch} → {h.holder_id} · {h.reason}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  )
+}
+
 function BorrowPanel({ pools, departments, onDone, log }) {
   const [poolId, setPoolId] = useState('')
   const [deptId, setDeptId] = useState('')
@@ -80,7 +147,7 @@ function BorrowPanel({ pools, departments, onDone, log }) {
   const [busy, setBusy] = useState(false)
 
   const submit = async (e) => {
-    e.preventDefault()
+    e?.preventDefault()
     setBusy(true)
     const r = await api.borrow({
       pool_id: Number(poolId),
@@ -94,7 +161,7 @@ function BorrowPanel({ pools, departments, onDone, log }) {
     setResult(r)
     if (r.status === 201 || r.status === 200) {
       if (r.data.credential) saveCred(r.data.borrow.id, r.data.credential)
-      log(`${r.status === 201 ? '借用成功' : '幂等重放(网络重试返回原结果)'} · #${r.data.borrow.id} ${employee} ${mode}`, r.status === 201 ? 'ok' : 'info')
+      log(`${r.status === 201 ? `借用成功(代次 ${r.data.borrow.issued_epoch})` : '幂等重放(网络重试返回原结果)'} · #${r.data.borrow.id} ${employee} ${mode}`, r.status === 201 ? 'ok' : 'info')
       onDone()
     } else {
       log(`借用被拒 · ${r.data.error}: ${r.data.message}`, 'err')
@@ -142,11 +209,7 @@ function BorrowPanel({ pools, departments, onDone, log }) {
           type="button"
           className="secondary"
           disabled={busy}
-          onClick={async (e) => {
-            // 不换幂等键连点两次 = 模拟网络重试
-            await submit(e)
-            await submit(e)
-          }}
+          onClick={async () => { await submit(); await submit() }}
         >
           借用并重试(同键)
         </button>
@@ -157,7 +220,7 @@ function BorrowPanel({ pools, departments, onDone, log }) {
           {result.data.error && <div>{result.data.error}: {result.data.message}</div>}
           {result.data.credential && (
             <div className="cred-box">
-              <div>离线归还凭证(已存本地):</div>
+              <div>离线归还凭证(代次 {result.data.borrow.issued_epoch},已存本地):</div>
               <code>{result.data.credential}</code>
             </div>
           )}
@@ -167,7 +230,32 @@ function BorrowPanel({ pools, departments, onDone, log }) {
   )
 }
 
-function ActiveBorrows({ borrows, onDone, log }) {
+function MigrateCell({ borrow, departments, onDone, log }) {
+  const [target, setTarget] = useState('')
+  const doMigrate = async () => {
+    if (!target) return
+    const r = await api.migrate(borrow.id, Number(target))
+    if (r.status === 200) {
+      log(`迁移 · #${borrow.id} → 部门${target}(池占用不变)`, 'ok')
+    } else {
+      log(`迁移被拒 · #${borrow.id} ${r.data.error}`, 'err')
+    }
+    onDone()
+  }
+  return (
+    <span className="migrate-cell">
+      <select value={target} onChange={(e) => setTarget(e.target.value)}>
+        <option value="">迁移到…</option>
+        {departments.filter((d) => d.id !== borrow.department_id).map((d) => (
+          <option key={d.id} value={d.id}>{d.name}</option>
+        ))}
+      </select>
+      <button className="mini" onClick={doMigrate} disabled={!target}>迁移</button>
+    </span>
+  )
+}
+
+function ActiveBorrows({ borrows, departments, onDone, log }) {
   const [manualCred, setManualCred] = useState('')
   const doReturn = async (b) => {
     let r
@@ -184,11 +272,10 @@ function ActiveBorrows({ borrows, onDone, log }) {
     if (r.status === 200) {
       dropCred(b.id)
       log(`归还 ${r.data.result === 'returned' ? '成功' : '幂等:已关闭'} · #${b.id}`, 'ok')
-      onDone()
     } else {
       log(`归还被拒 · #${b.id} ${r.data.error}: ${r.data.message}`, 'err')
-      onDone()
     }
+    onDone()
   }
 
   return (
@@ -197,7 +284,7 @@ function ActiveBorrows({ borrows, onDone, log }) {
       {borrows.length === 0 ? <p className="muted">暂无占用</p> : (
         <table className="borrow-table">
           <thead>
-            <tr><th>ID</th><th>池</th><th>部门</th><th>员工</th><th>模式</th><th>离线剩余</th><th></th></tr>
+            <tr><th>ID</th><th>池</th><th>部门</th><th>员工</th><th>模式</th><th>代次</th><th>离线剩余</th><th></th><th></th></tr>
           </thead>
           <tbody>
             {borrows.map((b) => (
@@ -207,17 +294,19 @@ function ActiveBorrows({ borrows, onDone, log }) {
                 <td>{b.department}</td>
                 <td>{b.employee}</td>
                 <td><span className={`tag ${b.mode}`}>{b.mode === 'online' ? '在线' : '离线'}</span></td>
+                <td className="muted">{b.issued_epoch}</td>
                 <td className={b.seconds_left != null && b.seconds_left < 30 ? 'warn' : ''}>
                   {b.mode === 'offline' ? fmtLeft(b.seconds_left) : '—'}
                 </td>
                 <td><button className="mini" onClick={() => doReturn(b)}>归还</button></td>
+                <td><MigrateCell borrow={b} departments={departments} onDone={onDone} log={log} /></td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
       <details className="manual-cred">
-        <summary>手动粘贴离线归还凭证</summary>
+        <summary>手动粘贴离线归还凭证(含旧代次凭证)</summary>
         <textarea
           rows="2"
           placeholder="v1.xxx.yyy"
@@ -288,6 +377,8 @@ function QuotaPanel({ pools, departments, onDone, log }) {
 
 export default function App() {
   const [ov, setOv] = useState(null)
+  const [auth, setAuth] = useState(null)
+  const [peerAuth, setPeerAuth] = useState(null)
   const [cacheState, setCacheState] = useState('')
   const [logs, setLogs] = useState([])
   const [, forceTick] = useState(0)
@@ -298,11 +389,15 @@ export default function App() {
   }, [])
 
   const refresh = useCallback(async () => {
-    const r = await api.overview()
-    if (r.status === 200) {
-      setOv(r.data)
-      setCacheState(r.cache || 'OFF')
+    const [ovr, aur, peer] = await Promise.all([
+      api.overview(), api.authority(), api.peerAuthority(peerBase()),
+    ])
+    if (ovr.status === 200) {
+      setOv(ovr.data)
+      setCacheState(ovr.cache || 'OFF')
     }
+    if (aur.status === 200) setAuth(aur.data)
+    setPeerAuth(peer)
   }, [])
 
   useEffect(() => {
@@ -311,7 +406,7 @@ export default function App() {
     return () => clearInterval(t)
   }, [refresh])
 
-  // 每秒重绘一次,让离线倒计时动起来
+  // 每秒重绘一次,让倒计时动起来
   useEffect(() => {
     const t = setInterval(() => forceTick((n) => n + 1), 1000)
     return () => clearInterval(t)
@@ -323,17 +418,31 @@ export default function App() {
     refresh()
   }
 
+  const doTakeover = async () => {
+    const r = await api.takeover('管理员在控制台手动接管')
+    if (r.data.acquired) {
+      log(`手动接管成功 · epoch ${r.data.lease.epoch}`, 'ok')
+    } else {
+      log(`接管未生效 · 当前持有者 ${r.data.lease.holder_id}(租约未过期)`, 'info')
+    }
+    refresh()
+  }
+
   if (!ov) return <div className="loading">加载中…</div>
 
   return (
     <div className="page">
       <header>
-        <h1>LicenseHub · 浮动许可证管理</h1>
+        <h1>LicenseHub · 浮动许可证管理
+          {auth && <span className="instance-badge">{auth.instance_id}</span>}
+        </h1>
         <div className="header-right">
           <span className={`cache-badge ${cacheState.toLowerCase()}`}>查询缓存 {cacheState}</span>
           <button className="mini" onClick={doReclaim}>立即过期回收</button>
         </div>
       </header>
+
+      {auth && <AuthorityPanel auth={auth} peerAuth={peerAuth} onTakeover={doTakeover} />}
 
       <section className="pools">
         {ov.pools.map((p) => <PoolCard key={p.id} pool={p} />)}
@@ -341,7 +450,7 @@ export default function App() {
 
       <section className="grid">
         <BorrowPanel pools={ov.pools} departments={ov.departments} onDone={refresh} log={log} />
-        <ActiveBorrows borrows={ov.active_borrows} onDone={refresh} log={log} />
+        <ActiveBorrows borrows={ov.active_borrows} departments={ov.departments} onDone={refresh} log={log} />
         <QuotaPanel pools={ov.pools} departments={ov.departments} onDone={refresh} log={log} />
         <div className="card">
           <h3>事件日志</h3>

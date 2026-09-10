@@ -12,9 +12,15 @@ async function req(method, path, body) {
 
 export const api = {
   overview: () => req('GET', '/overview'),
+  authority: () => req('GET', '/authority'),
+  peerAuthority: (base) =>
+    fetch(`${base}/api/authority`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
   borrow: (payload) => req('POST', '/borrows', payload),
+  migrate: (borrowId, departmentId) =>
+    req('POST', `/borrows/${borrowId}/migrate`, { department_id: departmentId }),
   returnById: (borrowId) => req('POST', '/returns', { borrow_id: borrowId }),
   returnByCredential: (credential) => req('POST', '/returns', { credential }),
   adjustQuota: (payload) => req('POST', '/quotas', payload),
   reclaim: () => req('POST', '/admin/reclaim'),
+  takeover: (reason) => req('POST', '/admin/takeover', { reason }),
 }
